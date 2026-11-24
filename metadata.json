@@ -1,0 +1,6 @@
+{
+  "name": "Papelaria X — Sistema de Pedidos",
+  "description": "Sistema web administrativo completo em PHP 8 e MySQL (compatível com InfinityFree) para gerenciamento de pedidos, clientes, catálogo de produtos/serviços, relatórios CSV e integração WhatsApp da Papelaria X.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
