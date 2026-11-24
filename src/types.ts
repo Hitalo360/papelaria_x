@@ -36,6 +36,7 @@ export interface Client {
   empresa?: string;
   observacoes?: string;
   ativo: boolean;
+  criadoEm?: string;
 }
 
 export interface Product {

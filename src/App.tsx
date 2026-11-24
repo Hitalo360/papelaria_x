@@ -3,7 +3,6 @@ import type { Session } from '@supabase/supabase-js';
 import {
   BarChart3,
   Check,
-  Cloud,
   Download,
   Edit3,
   Eye,
@@ -15,10 +14,11 @@ import {
   MessageCircle,
   Minus,
   Package,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   PlusCircle,
   Printer,
-  RefreshCw,
   Search,
   Settings,
   Trash2,
@@ -78,8 +78,12 @@ import {
   updateOrderStatus,
 } from './services/papelariaService';
 import { WhatsAppModal } from './components/WhatsAppModal';
-import { DeployGuideModal } from './components/DeployGuideModal';
 import { DateRangePicker } from './components/DateRangePicker';
+import { DashboardView } from './components/DashboardView';
+import {
+  computeDashboardAnalytics,
+  DashboardPeriodKey,
+} from './utils/dashboardMetrics';
 
 type SectionId =
   | 'dashboard'
@@ -120,7 +124,8 @@ export default function App() {
   // Navegação e UI
   const [section, setSection] = useState<SectionId>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [deployModalOpen, setDeployModalOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriodKey>('este_mes');
   const [flashMessage, setFlashMessage] = useState<{
     type: 'success' | 'error' | 'info';
     text: string;
@@ -242,7 +247,7 @@ export default function App() {
         setSelectedOrderId((prev) => (prev && ords.some((o) => o.id === prev) ? prev : ords[0].id));
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erro ao conectar com o Supabase.';
+      const msg = err instanceof Error ? err.message : 'Erro ao conectar com o servidor.';
       setDataError(msg);
     } finally {
       setLoadingData(false);
@@ -301,55 +306,18 @@ export default function App() {
     setFlashMessage(null);
   };
 
-  // Indicadores reais do Dashboard
-  const dashboardMetrics = useMemo(() => {
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const todayCount = orders.filter((o) => o.dataCadastro.slice(0, 10) === todayStr).length;
-    const byStatus: Record<OrderStatus, number> = {
-      aguardando_confirmacao: 0,
-      confirmado: 0,
-      em_producao: 0,
-      pronto_retirada: 0,
-      entregue: 0,
-      cancelado: 0,
-    };
-    let totalValue = 0;
-    orders.forEach((o) => {
-      if (byStatus[o.status] !== undefined) {
-        byStatus[o.status] += 1;
-      }
-      if (o.status !== 'cancelado') {
-        totalValue += o.valorTotal;
-      }
-    });
-
-    // Últimos 7 dias reais
-    const dateMap = new Map<string, { label: string; count: number; revenue: number }>();
-    for (let i = 6; i >= 0; i--) {
-      const dt = new Date(Date.now() - i * 86400000);
-      const iso = dt.toISOString().slice(0, 10);
-      dateMap.set(iso, { label: `${iso.slice(8, 10)}/${iso.slice(5, 7)}`, count: 0, revenue: 0 });
-    }
-    orders.forEach((o) => {
-      const d = o.dataCadastro.slice(0, 10);
-      const entry = dateMap.get(d);
-      if (entry) {
-        entry.count += 1;
-        if (o.status !== 'cancelado') entry.revenue += o.valorTotal;
-      }
-    });
-
-    return {
-      todayCount,
-      aguardando: byStatus.aguardando_confirmacao + byStatus.confirmado,
-      producao: byStatus.em_producao,
-      prontos: byStatus.pronto_retirada,
-      entregues: byStatus.entregue,
-      totalValue,
-      byStatus,
-      series: Array.from(dateMap.values()),
-    };
-  }, [orders]);
+  // Indicadores e análises reais do Dashboard
+  const dashboardAnalytics = useMemo(
+    () =>
+      computeDashboardAnalytics(
+        orders,
+        clients,
+        products,
+        clientById,
+        dashboardPeriod
+      ),
+    [orders, clients, products, clientById, dashboardPeriod]
+  );
 
   // Pedidos filtrados
   const filteredOrders = useMemo(() => {
@@ -433,7 +401,7 @@ export default function App() {
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!supabase) {
-      setLoginError('Configure VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY antes de autenticar.');
+      setLoginError('Serviço de autenticação indisponível no momento.');
       return;
     }
 
@@ -964,14 +932,6 @@ export default function App() {
             </div>
           </div>
 
-          {!isSupabaseConfigured && (
-            <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
-              <strong>Configuração pendente:</strong> defina{' '}
-              <code className="font-mono-num">VITE_SUPABASE_URL</code> e{' '}
-              <code className="font-mono-num">VITE_SUPABASE_ANON_KEY</code> nas variáveis de ambiente para conectar ao Supabase.
-            </div>
-          )}
-
           <div className="mb-4 grid grid-cols-2 rounded-md border border-slate-200 bg-slate-100 p-0.5 text-xs font-semibold">
             <button
               type="button"
@@ -1082,30 +1042,40 @@ export default function App() {
               </span>
             </button>
           </form>
-
-          <button
-            type="button"
-            onClick={() => setDeployModalOpen(true)}
-            className="mt-4 flex w-full items-center justify-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
-          >
-            <Cloud className="h-3.5 w-3.5 text-blue-700" />
-            <span>Configuração Supabase + Vercel</span>
-          </button>
         </div>
-        <DeployGuideModal open={deployModalOpen} onClose={() => setDeployModalOpen(false)} />
       </div>
     );
   }
 
-  const navItems: Array<{ id: SectionId; label: string; icon: React.ReactNode }> = [
-    { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-4 w-4 shrink-0" /> },
-    { id: 'pedidos', label: 'Pedidos', icon: <FileText className="h-4 w-4 shrink-0" /> },
-    { id: 'novo_pedido', label: 'Novo pedido', icon: <PlusCircle className="h-4 w-4 shrink-0" /> },
-    { id: 'clientes', label: 'Clientes', icon: <Users className="h-4 w-4 shrink-0" /> },
-    { id: 'produtos', label: 'Produtos', icon: <Package className="h-4 w-4 shrink-0" /> },
-    { id: 'relatorios', label: 'Relatórios', icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
-    { id: 'configuracoes', label: 'Configurações', icon: <Settings className="h-4 w-4 shrink-0" /> },
+  const navGroups: Array<{
+    group: string;
+    items: Array<{ id: SectionId; label: string; icon: React.ReactNode }>;
+  }> = [
+    {
+      group: 'Operação',
+      items: [
+        { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard className="h-4 w-4 shrink-0" /> },
+        { id: 'pedidos', label: 'Pedidos', icon: <FileText className="h-4 w-4 shrink-0" /> },
+        { id: 'novo_pedido', label: 'Novo pedido', icon: <PlusCircle className="h-4 w-4 shrink-0" /> },
+      ],
+    },
+    {
+      group: 'Cadastros e Análise',
+      items: [
+        { id: 'clientes', label: 'Clientes', icon: <Users className="h-4 w-4 shrink-0" /> },
+        { id: 'produtos', label: 'Produtos', icon: <Package className="h-4 w-4 shrink-0" /> },
+        { id: 'relatorios', label: 'Relatórios', icon: <BarChart3 className="h-4 w-4 shrink-0" /> },
+      ],
+    },
+    {
+      group: 'Sistema',
+      items: [
+        { id: 'configuracoes', label: 'Configurações', icon: <Settings className="h-4 w-4 shrink-0" /> },
+      ],
+    },
   ];
+
+  const navItems = navGroups.flatMap((g) => g.items);
 
   const activeOrder = orders.find((o) => o.id === selectedOrderId) ?? orders[0] ?? null;
   const activeOrderClient = activeOrder ? clientById.get(activeOrder.clienteId) ?? null : null;
@@ -1126,69 +1096,122 @@ export default function App() {
   const waOrder = waOrderId !== null ? orders.find((o) => o.id === waOrderId) ?? null : null;
   const waClient = waOrder ? clientById.get(waOrder.clienteId) ?? null : null;
 
-  const maxCount = Math.max(1, ...dashboardMetrics.series.map((s) => s.count));
-  const maxRevenue = Math.max(1, ...dashboardMetrics.series.map((s) => s.revenue));
-
   return (
     <div className="flex min-h-screen bg-slate-50 text-slate-900">
-      {/* Sidebar Desktop */}
-      <aside className="no-print sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-slate-900 text-slate-200 lg:flex">
-        <div className="border-b border-white/10 px-5 py-4">
+      {/* Sidebar Desktop Recolhível */}
+      <aside
+        className={`no-print sticky top-0 hidden h-screen shrink-0 flex-col bg-slate-900 text-slate-200 transition-[width] duration-200 lg:flex ${
+          sidebarCollapsed ? 'w-[74px]' : 'w-64'
+        }`}
+      >
+        <div
+          className={`flex items-center border-b border-white/10 py-4 ${
+            sidebarCollapsed ? 'justify-center px-3' : 'justify-between px-4'
+          }`}
+        >
           <button
             type="button"
             onClick={() => navigate('dashboard')}
-            className="flex items-center gap-3 text-left text-white"
+            title={config.nomeEmpresa}
+            className="flex items-center gap-3 text-left text-white overflow-hidden"
           >
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-600 text-sm font-bold text-white">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-sm font-bold text-white">
               PX
             </span>
-            <span className="font-display text-base font-bold tracking-tight whitespace-nowrap">
-              {config.nomeEmpresa}
-            </span>
+            {!sidebarCollapsed && (
+              <span className="font-display truncate text-base font-bold tracking-tight whitespace-nowrap">
+                {config.nomeEmpresa}
+              </span>
+            )}
           </button>
+
+          {!sidebarCollapsed && (
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(true)}
+              title="Recolher menu"
+              aria-label="Recolher menu"
+              className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
+          )}
         </div>
 
-        <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-          {navItems.map((item) => {
-            const isActive =
-              section === item.id ||
-              (item.id === 'pedidos' &&
-                (section === 'visualizar_pedido' || section === 'editar_pedido')) ||
-              (item.id === 'clientes' && section === 'visualizar_cliente');
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => (item.id === 'novo_pedido' ? prepareNewOrderForm() : navigate(item.id))}
-                className={`flex w-full items-center gap-3 rounded-md px-3.5 py-2.5 text-sm font-medium transition-colors whitespace-nowrap ${
-                  isActive
-                    ? 'bg-blue-600 text-white'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                }`}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+        {sidebarCollapsed && (
+          <div className="flex justify-center border-b border-white/10 py-2">
+            <button
+              type="button"
+              onClick={() => setSidebarCollapsed(false)}
+              title="Expandir menu"
+              aria-label="Expandir menu"
+              className="rounded-md p-1.5 text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
+            >
+              <PanelLeftOpen className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        <nav className="flex-1 space-y-4 overflow-y-auto p-3">
+          {navGroups.map((group) => (
+            <div key={group.group} className="space-y-1">
+              {!sidebarCollapsed && (
+                <div className="px-3 pb-1 text-[11px] font-semibold text-slate-400">
+                  {group.group}
+                </div>
+              )}
+              {group.items.map((item) => {
+                const isActive =
+                  section === item.id ||
+                  (item.id === 'pedidos' &&
+                    (section === 'visualizar_pedido' || section === 'editar_pedido')) ||
+                  (item.id === 'clientes' && section === 'visualizar_cliente');
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    title={sidebarCollapsed ? item.label : undefined}
+                    onClick={() =>
+                      item.id === 'novo_pedido' ? prepareNewOrderForm() : navigate(item.id)
+                    }
+                    className={`flex w-full items-center rounded-md py-2.5 text-sm font-medium transition-colors whitespace-nowrap ${
+                      sidebarCollapsed ? 'justify-center px-2' : 'gap-3 px-3.5'
+                    } ${
+                      isActive
+                        ? 'bg-blue-600 text-white'
+                        : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                    }`}
+                  >
+                    {item.icon}
+                    {!sidebarCollapsed && <span>{item.label}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
 
-        <div className="border-t border-white/10 p-4">
-          <div className="mb-2 rounded-md bg-white/5 px-3 py-2">
-            <div className="truncate text-sm font-semibold text-white">
-              {userProfile?.nome || session.user.email}
+        <div className="border-t border-white/10 p-3">
+          {!sidebarCollapsed && (
+            <div className="mb-2 rounded-md bg-white/5 px-3 py-2">
+              <div className="truncate text-sm font-semibold text-white">
+                {userProfile?.nome || session.user.email}
+              </div>
+              <div className="text-xs text-slate-400">
+                {userProfile?.perfil === 'admin' ? 'Administrador' : 'Atendente'}
+              </div>
             </div>
-            <div className="text-xs text-slate-400">
-              {userProfile?.perfil === 'admin' ? 'Administrador' : 'Atendente'}
-            </div>
-          </div>
+          )}
           <button
             type="button"
             onClick={handleLogout}
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-red-300 hover:bg-red-500/15 hover:text-red-200"
+            title={sidebarCollapsed ? 'Sair' : undefined}
+            className={`flex w-full items-center rounded-md py-2 text-sm font-medium text-red-300 transition-colors hover:bg-red-500/15 hover:text-red-200 ${
+              sidebarCollapsed ? 'justify-center px-2' : 'gap-3 px-3'
+            }`}
           >
-            <LogOut className="h-4 w-4" />
-            <span>Sair</span>
+            <LogOut className="h-4 w-4 shrink-0" />
+            {!sidebarCollapsed && <span>Sair</span>}
           </button>
         </div>
       </aside>
@@ -1270,24 +1293,6 @@ export default function App() {
           <div className="flex items-center gap-2 shrink-0">
             <button
               type="button"
-              onClick={() => loadAllData(session)}
-              disabled={loadingData}
-              title="Atualizar dados do Supabase"
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loadingData ? 'animate-spin' : ''}`} />
-              <span className="hidden md:inline">Atualizar</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setDeployModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
-            >
-              <Cloud className="h-3.5 w-3.5 text-blue-700" />
-              <span className="hidden sm:inline">Supabase / Vercel</span>
-            </button>
-            <button
-              type="button"
               onClick={prepareNewOrderForm}
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 whitespace-nowrap"
             >
@@ -1301,7 +1306,7 @@ export default function App() {
           {dataError && (
             <div className="no-print mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
               <div>
-                <strong>Erro ao consultar o Supabase:</strong> {dataError}
+                <strong>Erro ao carregar os dados:</strong> {dataError}
               </div>
               <button
                 type="button"
@@ -1337,258 +1342,37 @@ export default function App() {
           {loadingData && orders.length === 0 && clients.length === 0 ? (
             <div className="flex items-center justify-center rounded-lg border border-slate-200 bg-white py-16 text-sm text-slate-500">
               <Loader2 className="mr-2 h-5 w-5 animate-spin text-blue-600" />
-              <span>Carregando dados do banco PostgreSQL...</span>
+              <span>Carregando dados...</span>
             </div>
           ) : (
             <>
               {/* ==================== DASHBOARD ==================== */}
               {section === 'dashboard' && (
-                <div className="space-y-6">
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-                    <div className="rounded-lg border border-slate-200 bg-white p-4">
-                      <div className="text-xs font-semibold text-slate-500">Pedidos hoje</div>
-                      <div className="font-mono-num mt-1 text-2xl font-bold text-slate-900">
-                        {dashboardMetrics.todayCount}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">Registrados hoje</div>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-4">
-                      <div className="text-xs font-semibold text-slate-500">Aguardando</div>
-                      <div className="font-mono-num mt-1 text-2xl font-bold text-amber-700">
-                        {dashboardMetrics.aguardando}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">Confirmação / fila</div>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-4">
-                      <div className="text-xs font-semibold text-slate-500">Em produção</div>
-                      <div className="font-mono-num mt-1 text-2xl font-bold text-blue-700">
-                        {dashboardMetrics.producao}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">Em execução</div>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-4">
-                      <div className="text-xs font-semibold text-slate-500">Prontos</div>
-                      <div className="font-mono-num mt-1 text-2xl font-bold text-teal-700">
-                        {dashboardMetrics.prontos}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">Para retirada</div>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-4">
-                      <div className="text-xs font-semibold text-slate-500">Entregues</div>
-                      <div className="font-mono-num mt-1 text-2xl font-bold text-emerald-700">
-                        {dashboardMetrics.entregues}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">Concluídos</div>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-4">
-                      <div className="text-xs font-semibold text-slate-500">Valor total</div>
-                      <div className="font-mono-num mt-1 text-xl font-bold text-slate-900">
-                        {formatBRL(dashboardMetrics.totalValue)}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-500">Pedidos ativos</div>
-                    </div>
-                  </div>
-
-                  {/* Gráficos */}
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-                    <div className="rounded-lg border border-slate-200 bg-white p-5">
-                      <h2 className="mb-4 text-sm font-bold text-slate-900">
-                        Pedidos por período (7 dias)
-                      </h2>
-                      <div className="flex h-44 items-end gap-2 border-b border-slate-200 pb-2">
-                        {dashboardMetrics.series.map((s) => (
-                          <div key={s.label} className="flex flex-1 flex-col items-center gap-1.5">
-                            <span className="font-mono-num text-[11px] font-semibold text-slate-700">
-                              {s.count}
-                            </span>
-                            <div
-                              className="flex w-full items-end justify-center"
-                              style={{ height: '120px' }}
-                            >
-                              <div
-                                className="w-full max-w-[28px] rounded-t bg-blue-600 transition-all"
-                                style={{ height: `${Math.max(6, (s.count / maxCount) * 100)}%` }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2 flex gap-2">
-                        {dashboardMetrics.series.map((s) => (
-                          <div
-                            key={s.label}
-                            className="font-mono-num flex-1 text-center text-[11px] text-slate-500"
-                          >
-                            {s.label}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-slate-200 bg-white p-5">
-                      <h2 className="mb-4 text-sm font-bold text-slate-900">
-                        Faturamento por período (R$)
-                      </h2>
-                      <div className="flex h-44 items-end gap-2 border-b border-slate-200 pb-2">
-                        {dashboardMetrics.series.map((s) => (
-                          <div key={s.label} className="flex flex-1 flex-col items-center gap-1.5">
-                            <span className="font-mono-num text-[10px] font-semibold text-slate-700">
-                              {s.revenue > 0 ? Math.round(s.revenue) : 0}
-                            </span>
-                            <div
-                              className="flex w-full items-end justify-center"
-                              style={{ height: '120px' }}
-                            >
-                              <div
-                                className="w-full max-w-[28px] rounded-t bg-teal-600 transition-all"
-                                style={{
-                                  height: `${Math.max(6, (s.revenue / maxRevenue) * 100)}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-2 flex gap-2">
-                        {dashboardMetrics.series.map((s) => (
-                          <div
-                            key={s.label}
-                            className="font-mono-num flex-1 text-center text-[11px] text-slate-500"
-                          >
-                            {s.label}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-slate-200 bg-white p-5">
-                      <h2 className="mb-4 text-sm font-bold text-slate-900">Situação dos pedidos</h2>
-                      <div className="space-y-3">
-                        {(Object.keys(STATUS_META) as OrderStatus[]).map((stKey) => {
-                          const count = dashboardMetrics.byStatus[stKey];
-                          const pct =
-                            orders.length > 0 ? Math.round((count / orders.length) * 100) : 0;
-                          return (
-                            <div key={stKey}>
-                              <div className="mb-1 flex items-center justify-between text-xs">
-                                <span className="font-medium text-slate-700">
-                                  {STATUS_META[stKey].label}
-                                </span>
-                                <span className="font-mono-num text-slate-600">
-                                  {count} ({pct}%)
-                                </span>
-                              </div>
-                              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
-                                <div
-                                  className="h-full rounded-full"
-                                  style={{
-                                    width: `${pct}%`,
-                                    backgroundColor: STATUS_META[stKey].color,
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Últimos Pedidos */}
-                  <div className="rounded-lg border border-slate-200 bg-white">
-                    <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
-                      <h2 className="text-sm font-bold text-slate-900">
-                        Últimos pedidos cadastrados
-                      </h2>
-                      <button
-                        type="button"
-                        onClick={() => navigate('pedidos')}
-                        className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                      >
-                        Ver todos
-                      </button>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left text-sm">
-                        <thead className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-600">
-                          <tr>
-                            <th className="px-4 py-3">Pedido</th>
-                            <th className="px-4 py-3">Cliente</th>
-                            <th className="px-4 py-3">Telefone</th>
-                            <th className="px-4 py-3">Previsão</th>
-                            <th className="px-4 py-3 text-right">Total</th>
-                            <th className="px-4 py-3">Status</th>
-                            <th className="px-4 py-3 text-right">Ações</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {orders.length === 0 ? (
-                            <tr>
-                              <td colSpan={7} className="px-4 py-10 text-center text-slate-500">
-                                Nenhum pedido cadastrado ainda.{' '}
-                                <button
-                                  type="button"
-                                  onClick={prepareNewOrderForm}
-                                  className="font-semibold text-blue-600 hover:underline"
-                                >
-                                  Cadastrar primeiro pedido
-                                </button>
-                              </td>
-                            </tr>
-                          ) : (
-                            orders.slice(0, 6).map((o) => {
-                              const cli = clientById.get(o.clienteId);
-                              return (
-                                <tr key={o.id} className="hover:bg-slate-50/70">
-                                  <td className="font-mono-num px-4 py-3 font-semibold text-slate-900">
-                                    #{o.numero}
-                                  </td>
-                                  <td className="px-4 py-3 font-medium text-slate-800">
-                                    {cli?.nome || '-'}
-                                  </td>
-                                  <td className="font-mono-num px-4 py-3 text-xs text-slate-600">
-                                    {cli?.telefone || '-'}
-                                  </td>
-                                  <td className="font-mono-num px-4 py-3 text-xs text-slate-600">
-                                    {formatDateBR(o.dataPrevisao)}
-                                  </td>
-                                  <td className="font-mono-num px-4 py-3 text-right font-semibold text-slate-900">
-                                    {formatBRL(o.valorTotal)}
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <span
-                                      className={`inline-block rounded border px-2 py-0.5 text-xs font-semibold whitespace-nowrap ${STATUS_META[o.status].badgeClass}`}
-                                    >
-                                      {STATUS_META[o.status].label}
-                                    </span>
-                                  </td>
-                                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenOrder(o.id)}
-                                      className="mr-1.5 inline-flex items-center rounded border border-slate-300 p-1.5 text-slate-700 hover:bg-slate-100"
-                                      title="Visualizar pedido"
-                                    >
-                                      <Eye className="h-3.5 w-3.5" />
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => setWaOrderId(o.id)}
-                                      className="inline-flex items-center rounded border border-emerald-300 bg-emerald-50 p-1.5 text-emerald-700 hover:bg-emerald-100"
-                                      title="Enviar pelo WhatsApp"
-                                    >
-                                      <MessageCircle className="h-3.5 w-3.5" />
-                                    </button>
-                                  </td>
-                                </tr>
-                              );
-                            })
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
+                <DashboardView
+                  analytics={dashboardAnalytics}
+                  periodKey={dashboardPeriod}
+                  onPeriodChange={setDashboardPeriod}
+                  clientById={clientById}
+                  onNewOrder={prepareNewOrderForm}
+                  onOpenOrders={(statusFilter) => {
+                    setFilterStatus(statusFilter ?? '');
+                    navigate('pedidos');
+                  }}
+                  onOpenOrder={handleOpenOrder}
+                  onOpenClients={() => {
+                    setEditingClientId(null);
+                    navigate('clientes');
+                  }}
+                  onOpenClient={(cliId) => {
+                    setSelectedClientId(cliId);
+                    navigate('visualizar_cliente');
+                  }}
+                  onOpenProducts={() => {
+                    setEditingProductId(null);
+                    navigate('produtos');
+                  }}
+                  onOpenReports={() => navigate('relatorios')}
+                />
               )}
 
               {/* ==================== PEDIDOS ==================== */}
@@ -3504,8 +3288,6 @@ export default function App() {
         config={config}
         onClose={() => setWaOrderId(null)}
       />
-
-      <DeployGuideModal open={deployModalOpen} onClose={() => setDeployModalOpen(false)} />
     </div>
   );
 }

@@ -22,6 +22,7 @@ function mapClient(row: Record<string, unknown>): Client {
     empresa: row.empresa ? String(row.empresa) : '',
     observacoes: row.observacoes ? String(row.observacoes) : '',
     ativo: Boolean(row.ativo),
+    criadoEm: row.criado_em ? String(row.criado_em) : undefined,
   };
 }
 
