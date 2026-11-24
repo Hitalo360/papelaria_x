@@ -11,6 +11,7 @@ import {
   UserProfile,
 } from '../types';
 import { cleanDigits, DEFAULT_CONFIG, formatPhone } from '../utils/formatters';
+import { calculateItemSubtotal, calculateOrderTotals, roundCurrency } from '../utils/orderCalculations';
 
 function mapClient(row: Record<string, unknown>): Client {
   return {
@@ -370,13 +371,7 @@ export async function createOrder(input: {
     throw new Error('Adicione pelo menos um produto ou serviço válido ao pedido.');
   }
 
-  const subtotal = Number(
-    input.itens
-      .reduce((acc, it) => acc + Math.max(0, it.quantidade * it.valorUnitario), 0)
-      .toFixed(2)
-  );
-  const desconto = Math.min(subtotal, Math.max(0, Number(input.desconto) || 0));
-  const valorTotal = Number(Math.max(0, subtotal - desconto).toFixed(2));
+  const { subtotal, desconto, valorTotal } = calculateOrderTotals(input.itens, input.desconto);
 
   const statusInicial: OrderStatus = 'aguardando_confirmacao';
 
@@ -407,8 +402,8 @@ export async function createOrder(input: {
     descricao_item: it.descricaoItem.trim(),
     unidade_medida: it.unidadeMedida.trim() || 'un',
     quantidade: Number(it.quantidade),
-    valor_unitario: Number(it.valorUnitario),
-    subtotal: Number((it.quantidade * it.valorUnitario).toFixed(2)),
+    valor_unitario: roundCurrency(Number(it.valorUnitario)),
+    subtotal: calculateItemSubtotal(it.quantidade, it.valorUnitario),
   }));
 
   const { error: itensErr } = await sb.from('pedido_itens').insert(itensPayload);
@@ -463,13 +458,7 @@ export async function updateOrder(input: {
     throw new Error('O pedido precisa conter pelo menos um item válido.');
   }
 
-  const subtotal = Number(
-    input.itens
-      .reduce((acc, it) => acc + Math.max(0, it.quantidade * it.valorUnitario), 0)
-      .toFixed(2)
-  );
-  const desconto = Math.min(subtotal, Math.max(0, Number(input.desconto) || 0));
-  const valorTotal = Number(Math.max(0, subtotal - desconto).toFixed(2));
+  const { subtotal, desconto, valorTotal } = calculateOrderTotals(input.itens, input.desconto);
 
   const { error: updErr } = await sb
     .from('pedidos')
@@ -498,8 +487,8 @@ export async function updateOrder(input: {
     descricao_item: it.descricaoItem.trim(),
     unidade_medida: it.unidadeMedida.trim() || 'un',
     quantidade: Number(it.quantidade),
-    valor_unitario: Number(it.valorUnitario),
-    subtotal: Number((it.quantidade * it.valorUnitario).toFixed(2)),
+    valor_unitario: roundCurrency(Number(it.valorUnitario)),
+    subtotal: calculateItemSubtotal(it.quantidade, it.valorUnitario),
   }));
 
   const { error: insItemsErr } = await sb.from('pedido_itens').insert(itensPayload);

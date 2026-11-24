@@ -13,6 +13,7 @@ import {
   LogOut,
   Menu,
   MessageCircle,
+  Minus,
   Package,
   Plus,
   PlusCircle,
@@ -43,6 +44,20 @@ import {
   STATUS_META,
   waPhone,
 } from './utils/formatters';
+import {
+  addOrIncrementProductItem,
+  calculateItemSubtotal,
+  calculateOrderTotals,
+  isFractionalUnit,
+  normalizeQuantity,
+  roundCurrency,
+  stepQuantity,
+} from './utils/orderCalculations';
+import {
+  computeReportData,
+  DatePresetKey,
+  resolvePresetRange,
+} from './utils/dateRange';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import {
   createCategory,
@@ -64,6 +79,7 @@ import {
 } from './services/papelariaService';
 import { WhatsAppModal } from './components/WhatsAppModal';
 import { DeployGuideModal } from './components/DeployGuideModal';
+import { DateRangePicker } from './components/DateRangePicker';
 
 type SectionId =
   | 'dashboard'
@@ -179,11 +195,9 @@ export default function App() {
   const [newCategoryName, setNewCategoryName] = useState('');
 
   // Relatórios
-  const [reportStart, setReportStart] = useState(() => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-  });
-  const [reportEnd, setReportEnd] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reportPreset, setReportPreset] = useState<DatePresetKey>('este_mes');
+  const [reportStart, setReportStart] = useState(() => resolvePresetRange('este_mes').startDate);
+  const [reportEnd, setReportEnd] = useState(() => resolvePresetRange('este_mes').endDate);
 
   const showFlash = (type: 'success' | 'error' | 'info', text: string) => {
     setFlashMessage({ type, text });
@@ -357,13 +371,15 @@ export default function App() {
     });
   }, [orders, clientById, filterNumero, filterCliente, filterTelefone, filterStatus, filterDataInicio, filterDataFim]);
 
-  // Cálculo em tempo real do rascunho de pedido
-  const draftSubtotal = useMemo(
-    () => draftItems.reduce((acc, item) => acc + Math.max(0, item.quantidade * item.valorUnitario), 0),
-    [draftItems]
+  // Cálculo em tempo real do rascunho de pedido (sem erros de arredondamento)
+  const {
+    subtotal: draftSubtotal,
+    desconto: parsedDiscount,
+    valorTotal: draftTotal,
+  } = useMemo(
+    () => calculateOrderTotals(draftItems, orderDesconto),
+    [draftItems, orderDesconto]
   );
-  const parsedDiscount = Math.min(draftSubtotal, Math.max(0, parseFloat(orderDesconto) || 0));
-  const draftTotal = Math.max(0, draftSubtotal - parsedDiscount);
 
   const nextOrderNumberPreview = useMemo(() => {
     const maxNum = orders.reduce((max, o) => Math.max(max, parseInt(o.numero, 10) || 0), 0);
@@ -408,66 +424,10 @@ export default function App() {
   }, [products, productStatusFilter, productCategoryFilter, productSearch]);
 
   // Agregação real de Relatórios
-  const reportData = useMemo(() => {
-    const inPeriod = orders.filter((o) => {
-      const d = o.dataCadastro.slice(0, 10);
-      return (!reportStart || d >= reportStart) && (!reportEnd || d <= reportEnd);
-    });
-
-    const faturamento = inPeriod
-      .filter((o) => o.status !== 'cancelado')
-      .reduce((sum, o) => sum + o.valorTotal, 0);
-    const entregues = inPeriod.filter((o) => o.status === 'entregue').length;
-    const cancelados = inPeriod.filter((o) => o.status === 'cancelado').length;
-
-    const prodAgg = new Map<string, { nome: string; qtd: number; pedidos: number; valor: number }>();
-    const cliAgg = new Map<number, { id: number; nome: string; tel: string; pedidos: number; total: number }>();
-
-    inPeriod
-      .filter((o) => o.status !== 'cancelado')
-      .forEach((o) => {
-        const cli = clientById.get(o.clienteId);
-        if (cli) {
-          const cur = cliAgg.get(cli.id) ?? {
-            id: cli.id,
-            nome: cli.nome,
-            tel: cli.telefone,
-            pedidos: 0,
-            total: 0,
-          };
-          cur.pedidos += 1;
-          cur.total += o.valorTotal;
-          cliAgg.set(cli.id, cur);
-        }
-
-        const seenProdInOrder = new Set<string>();
-        o.itens.forEach((it) => {
-          const cur = prodAgg.get(it.descricaoItem) ?? {
-            nome: it.descricaoItem,
-            qtd: 0,
-            pedidos: 0,
-            valor: 0,
-          };
-          cur.qtd += it.quantidade;
-          cur.valor += it.subtotal;
-          if (!seenProdInOrder.has(it.descricaoItem)) {
-            cur.pedidos += 1;
-            seenProdInOrder.add(it.descricaoItem);
-          }
-          prodAgg.set(it.descricaoItem, cur);
-        });
-      });
-
-    return {
-      orders: inPeriod,
-      totalPedidos: inPeriod.length,
-      faturamento,
-      entregues,
-      cancelados,
-      topProdutos: Array.from(prodAgg.values()).sort((a, b) => b.qtd - a.qtd),
-      topClientes: Array.from(cliAgg.values()).sort((a, b) => b.total - a.total),
-    };
-  }, [orders, clientById, reportStart, reportEnd]);
+  const reportData = useMemo(
+    () => computeReportData(orders, clientById, reportStart, reportEnd),
+    [orders, clientById, reportStart, reportEnd]
+  );
 
   // Handlers de Autenticação
   const handleAuthSubmit = async (e: React.FormEvent) => {
@@ -559,17 +519,7 @@ export default function App() {
     const id = parseInt(catalogSelectedId, 10);
     const prod = products.find((p) => p.id === id);
     if (!prod) return;
-    setDraftItems((prev) => [
-      ...prev,
-      {
-        tempId: Date.now() + Math.random(),
-        produtoId: prod.id,
-        descricaoItem: prod.nome,
-        unidadeMedida: prod.unidadeMedida,
-        quantidade: 1,
-        valorUnitario: prod.preco,
-      },
-    ]);
+    setDraftItems((prev) => addOrIncrementProductItem(prev, prod));
     setCatalogSelectedId('');
   };
 
@@ -962,7 +912,11 @@ export default function App() {
     const urlObj = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = urlObj;
-    link.download = `papelaria_x_${tipo}_${reportStart}_a_${reportEnd}.csv`;
+    const periodSuffix =
+      reportStart || reportEnd
+        ? `${reportStart || 'inicio'}_a_${reportEnd || 'hoje'}`
+        : 'todo_periodo';
+    link.download = `papelaria_x_${tipo}_${periodSuffix}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2024,109 +1978,219 @@ export default function App() {
                                 <tr>
                                   <th className="pb-2">Produto / Serviço</th>
                                   <th className="w-20 pb-2">Unid.</th>
-                                  <th className="w-24 pb-2 text-right">Qtd.</th>
+                                  <th className="w-32 pb-2 text-center">Qtd.</th>
                                   <th className="w-28 pb-2 text-right">Valor Unit.</th>
                                   <th className="w-28 pb-2 text-right">Subtotal</th>
                                   <th className="w-10 pb-2"></th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
-                                {draftItems.map((it) => (
-                                  <tr key={it.tempId}>
-                                    <td className="py-2 pr-2">
-                                      <input
-                                        type="text"
-                                        required
-                                        value={it.descricaoItem}
-                                        onChange={(e) =>
-                                          setDraftItems((prev) =>
-                                            prev.map((row) =>
-                                              row.tempId === it.tempId
-                                                ? { ...row, descricaoItem: e.target.value }
-                                                : row
+                                {draftItems.map((it) => {
+                                  const fractional = isFractionalUnit(it.unidadeMedida);
+                                  const itemSubtotal = calculateItemSubtotal(
+                                    it.quantidade,
+                                    it.valorUnitario
+                                  );
+
+                                  return (
+                                    <tr key={it.tempId}>
+                                      <td className="py-2 pr-2">
+                                        <input
+                                          type="text"
+                                          required
+                                          value={it.descricaoItem}
+                                          onChange={(e) =>
+                                            setDraftItems((prev) =>
+                                              prev.map((row) =>
+                                                row.tempId === it.tempId
+                                                  ? { ...row, descricaoItem: e.target.value }
+                                                  : row
+                                              )
                                             )
-                                          )
-                                        }
-                                        placeholder="Descrição do item"
-                                        className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-sm"
-                                      />
-                                    </td>
-                                    <td className="py-2 pr-2">
-                                      <input
-                                        type="text"
-                                        value={it.unidadeMedida}
-                                        onChange={(e) =>
-                                          setDraftItems((prev) =>
-                                            prev.map((row) =>
-                                              row.tempId === it.tempId
-                                                ? { ...row, unidadeMedida: e.target.value }
-                                                : row
-                                            )
-                                          )
-                                        }
-                                        className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
-                                      />
-                                    </td>
-                                    <td className="py-2 pr-2">
-                                      <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0.01"
-                                        value={it.quantidade}
-                                        onChange={(e) =>
-                                          setDraftItems((prev) =>
-                                            prev.map((row) =>
-                                              row.tempId === it.tempId
-                                                ? {
-                                                    ...row,
-                                                    quantidade: parseFloat(e.target.value) || 0,
+                                          }
+                                          placeholder="Descrição do item"
+                                          className="w-full rounded border border-slate-300 px-2.5 py-1.5 text-sm"
+                                        />
+                                      </td>
+                                      <td className="py-2 pr-2">
+                                        <input
+                                          type="text"
+                                          value={it.unidadeMedida}
+                                          onChange={(e) => {
+                                            const nextUnit = e.target.value;
+                                            setDraftItems((prev) =>
+                                              prev.map((row) =>
+                                                row.tempId === it.tempId
+                                                  ? {
+                                                      ...row,
+                                                      unidadeMedida: nextUnit,
+                                                      quantidade:
+                                                        row.quantidade > 0
+                                                          ? normalizeQuantity(
+                                                              row.quantidade,
+                                                              nextUnit
+                                                            )
+                                                          : 1,
+                                                    }
+                                                  : row
+                                              )
+                                            );
+                                          }}
+                                          className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
+                                        />
+                                      </td>
+                                      <td className="py-2 pr-2">
+                                        <div className="inline-flex w-full items-center justify-center rounded border border-slate-300 bg-white">
+                                          <button
+                                            type="button"
+                                            aria-label="Diminuir 1 unidade"
+                                            onClick={() =>
+                                              setDraftItems((prev) =>
+                                                prev.map((row) =>
+                                                  row.tempId === it.tempId
+                                                    ? {
+                                                        ...row,
+                                                        quantidade: stepQuantity(
+                                                          row.quantidade,
+                                                          -1,
+                                                          row.unidadeMedida
+                                                        ),
+                                                      }
+                                                    : row
+                                                )
+                                              )
+                                            }
+                                            className="px-2 py-1.5 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                                          >
+                                            <Minus className="h-3.5 w-3.5" />
+                                          </button>
+                                          <input
+                                            type="number"
+                                            step={fractional ? '0.01' : '1'}
+                                            min={fractional ? '0.01' : '1'}
+                                            value={it.quantidade === 0 ? '' : it.quantidade}
+                                            onChange={(e) => {
+                                              const raw = e.target.value;
+                                              setDraftItems((prev) =>
+                                                prev.map((row) => {
+                                                  if (row.tempId !== it.tempId) return row;
+                                                  if (raw === '') {
+                                                    return { ...row, quantidade: 0 };
                                                   }
-                                                : row
-                                            )
-                                          )
-                                        }
-                                        className="font-mono-num w-full rounded border border-slate-300 px-2 py-1.5 text-right text-sm"
-                                      />
-                                    </td>
-                                    <td className="py-2 pr-2">
-                                      <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0"
-                                        value={it.valorUnitario}
-                                        onChange={(e) =>
-                                          setDraftItems((prev) =>
-                                            prev.map((row) =>
-                                              row.tempId === it.tempId
-                                                ? {
-                                                    ...row,
-                                                    valorUnitario: parseFloat(e.target.value) || 0,
+                                                  if (isFractionalUnit(row.unidadeMedida)) {
+                                                    const parsed = parseFloat(
+                                                      raw.replace(',', '.')
+                                                    );
+                                                    return {
+                                                      ...row,
+                                                      quantidade: Number.isNaN(parsed)
+                                                        ? 0
+                                                        : Math.max(0, roundCurrency(parsed)),
+                                                    };
                                                   }
-                                                : row
+                                                  const parsedInt = parseInt(
+                                                    raw.replace(/[^\d]/g, ''),
+                                                    10
+                                                  );
+                                                  return {
+                                                    ...row,
+                                                    quantidade: Number.isNaN(parsedInt)
+                                                      ? 0
+                                                      : parsedInt,
+                                                  };
+                                                })
+                                              );
+                                            }}
+                                            onBlur={() =>
+                                              setDraftItems((prev) =>
+                                                prev.map((row) => {
+                                                  if (row.tempId !== it.tempId) return row;
+                                                  const minVal = isFractionalUnit(row.unidadeMedida)
+                                                    ? 0.01
+                                                    : 1;
+                                                  return {
+                                                    ...row,
+                                                    quantidade:
+                                                      row.quantidade > 0
+                                                        ? normalizeQuantity(
+                                                            row.quantidade,
+                                                            row.unidadeMedida
+                                                          )
+                                                        : minVal,
+                                                  };
+                                                })
+                                              )
+                                            }
+                                            className="font-mono-num w-16 border-x border-slate-200 px-1.5 py-1.5 text-center text-sm focus:outline-none"
+                                          />
+                                          <button
+                                            type="button"
+                                            aria-label="Adicionar 1 unidade"
+                                            onClick={() =>
+                                              setDraftItems((prev) =>
+                                                prev.map((row) =>
+                                                  row.tempId === it.tempId
+                                                    ? {
+                                                        ...row,
+                                                        quantidade: stepQuantity(
+                                                          row.quantidade,
+                                                          1,
+                                                          row.unidadeMedida
+                                                        ),
+                                                      }
+                                                    : row
+                                                )
+                                              )
+                                            }
+                                            className="px-2 py-1.5 text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                                          >
+                                            <Plus className="h-3.5 w-3.5" />
+                                          </button>
+                                        </div>
+                                      </td>
+                                      <td className="py-2 pr-2">
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          min="0"
+                                          value={it.valorUnitario}
+                                          onChange={(e) =>
+                                            setDraftItems((prev) =>
+                                              prev.map((row) =>
+                                                row.tempId === it.tempId
+                                                  ? {
+                                                      ...row,
+                                                      valorUnitario: roundCurrency(
+                                                        Math.max(0, parseFloat(e.target.value) || 0)
+                                                      ),
+                                                    }
+                                                  : row
+                                              )
                                             )
-                                          )
-                                        }
-                                        className="font-mono-num w-full rounded border border-slate-300 px-2 py-1.5 text-right text-sm"
-                                      />
-                                    </td>
-                                    <td className="font-mono-num py-2 text-right font-semibold text-slate-900">
-                                      {formatBRL(Math.max(0, it.quantidade * it.valorUnitario))}
-                                    </td>
-                                    <td className="py-2 text-right">
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setDraftItems((prev) =>
-                                            prev.filter((row) => row.tempId !== it.tempId)
-                                          )
-                                        }
-                                        className="rounded p-1 text-red-600 hover:bg-red-50"
-                                      >
-                                        <Trash2 className="h-4 w-4" />
-                                      </button>
-                                    </td>
-                                  </tr>
-                                ))}
+                                          }
+                                          className="font-mono-num w-full rounded border border-slate-300 px-2 py-1.5 text-right text-sm"
+                                        />
+                                      </td>
+                                      <td className="font-mono-num py-2 text-right font-semibold text-slate-900">
+                                        {formatBRL(itemSubtotal)}
+                                      </td>
+                                      <td className="py-2 text-right">
+                                        <button
+                                          type="button"
+                                          aria-label="Remover item do pedido"
+                                          onClick={() =>
+                                            setDraftItems((prev) =>
+                                              prev.filter((row) => row.tempId !== it.tempId)
+                                            )
+                                          }
+                                          className="rounded p-1 text-red-600 hover:bg-red-50"
+                                        >
+                                          <Trash2 className="h-4 w-4" />
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </div>
@@ -3115,33 +3179,19 @@ export default function App() {
               {/* ==================== RELATÓRIOS ==================== */}
               {section === 'relatorios' && (
                 <div className="space-y-6">
-                  <div className="flex flex-wrap items-end justify-between gap-4 rounded-lg border border-slate-200 bg-white p-4">
-                    <div className="flex flex-wrap gap-3">
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-600">
-                          Data inicial
-                        </label>
-                        <input
-                          type="date"
-                          value={reportStart}
-                          onChange={(e) => setReportStart(e.target.value)}
-                          className="font-mono-num rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-                        />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-slate-600">
-                          Data final
-                        </label>
-                        <input
-                          type="date"
-                          value={reportEnd}
-                          onChange={(e) => setReportEnd(e.target.value)}
-                          className="font-mono-num rounded-md border border-slate-300 px-3 py-1.5 text-sm"
-                        />
-                      </div>
-                    </div>
+                  <div className="flex flex-col justify-between gap-4 rounded-lg border border-slate-200 bg-white p-4 lg:flex-row lg:items-start">
+                    <DateRangePicker
+                      startDate={reportStart}
+                      endDate={reportEnd}
+                      preset={reportPreset}
+                      onChange={(next) => {
+                        setReportStart(next.startDate);
+                        setReportEnd(next.endDate);
+                        setReportPreset(next.preset);
+                      }}
+                    />
 
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap gap-2 lg:shrink-0">
                       <button
                         type="button"
                         onClick={() => handleExportCSV('pedidos')}
@@ -3195,6 +3245,51 @@ export default function App() {
                       <div className="font-mono-num mt-1 text-2xl font-bold text-red-700">
                         {reportData.cancelados}
                       </div>
+                    </div>
+                  </div>
+
+                  {/* Pedidos por status */}
+                  <div className="rounded-lg border border-slate-200 bg-white">
+                    <div className="border-b border-slate-200 px-5 py-3.5">
+                      <h2 className="text-sm font-bold text-slate-900">Pedidos por status</h2>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
+                      {(Object.keys(STATUS_META) as OrderStatus[]).map((statusKey) => {
+                        const meta = STATUS_META[statusKey];
+                        const stats = reportData.byStatus[statusKey];
+                        const pct =
+                          reportData.totalPedidos > 0
+                            ? Math.round((stats.count / reportData.totalPedidos) * 100)
+                            : 0;
+                        return (
+                          <div
+                            key={statusKey}
+                            className="flex flex-col justify-between rounded-md border border-slate-200 bg-slate-50/50 p-3.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span
+                                className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${meta.badgeClass}`}
+                              >
+                                {meta.label}
+                              </span>
+                              <span className="font-mono-num text-xs font-medium text-slate-500">
+                                {pct}%
+                              </span>
+                            </div>
+                            <div className="mt-3 flex items-baseline justify-between">
+                              <span className="font-mono-num text-lg font-bold text-slate-900">
+                                {stats.count}{' '}
+                                <span className="text-xs font-normal text-slate-500">
+                                  {stats.count === 1 ? 'pedido' : 'pedidos'}
+                                </span>
+                              </span>
+                              <span className="font-mono-num text-xs font-semibold text-slate-700">
+                                {formatBRL(stats.total)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
