@@ -75,6 +75,8 @@ export interface DashboardAnalyticsData {
   awaitingConfirmationCount: number;
   inProductionCount: number;
   readyForPickupCount: number;
+  completedTotalCount: number;
+  completedThisMonthCount: number;
   completedInPeriodCount: number;
   canceledInPeriodCount: number;
 
@@ -86,6 +88,8 @@ export interface DashboardAnalyticsData {
   // Gráficos
   series7d: DailyChartPoint[];
   series30d: DailyChartPoint[];
+  byStatus7d: Record<OrderStatus, { count: number; total: number }>;
+  byStatus30d: Record<OrderStatus, { count: number; total: number }>;
   monthlySeries: MonthlyChartPoint[];
   byStatusInPeriod: Record<OrderStatus, { count: number; total: number }>;
   topProductsInPeriod: Array<{ nome: string; qtd: number; pedidos: number; valor: number }>;
@@ -182,6 +186,14 @@ export function computeDashboardAnalytics(
   const prevMonthStart = toLocalISODate(new Date(today.getFullYear(), today.getMonth() - 1, 1));
   const prevMonthEnd = toLocalISODate(new Date(today.getFullYear(), today.getMonth(), 0));
 
+  const start7dDt = new Date(today);
+  start7dDt.setDate(start7dDt.getDate() - 6);
+  const start7dISO = toLocalISODate(start7dDt);
+
+  const start30dDt = new Date(today);
+  start30dDt.setDate(start30dDt.getDate() - 29);
+  const start30dISO = toLocalISODate(start30dDt);
+
   const { startDate: periodStart, endDate: periodEnd } = resolvePresetRange(periodKey, today);
 
   // Calcula período anterior de igual duração para comparativo
@@ -213,17 +225,23 @@ export function computeDashboardAnalytics(
   let awaitingConfirmationCount = 0;
   let inProductionCount = 0;
   let readyForPickupCount = 0;
+  let completedTotalCount = 0;
+  let completedThisMonthCount = 0;
   let completedInPeriodCount = 0;
   let canceledInPeriodCount = 0;
 
-  const byStatusInPeriod: Record<OrderStatus, { count: number; total: number }> = {
+  const createEmptyStatusMap = (): Record<OrderStatus, { count: number; total: number }> => ({
     aguardando_confirmacao: { count: 0, total: 0 },
     confirmado: { count: 0, total: 0 },
     em_producao: { count: 0, total: 0 },
     pronto_retirada: { count: 0, total: 0 },
     entregue: { count: 0, total: 0 },
     cancelado: { count: 0, total: 0 },
-  };
+  });
+
+  const byStatusInPeriod = createEmptyStatusMap();
+  const byStatus7d = createEmptyStatusMap();
+  const byStatus30d = createEmptyStatusMap();
 
   const prodAgg = new Map<string, { nome: string; qtd: number; pedidos: number; valor: number }>();
 
@@ -256,9 +274,28 @@ export function computeDashboardAnalytics(
     if (orderDate >= currentMonthStart && orderDate <= todayISO) {
       monthOrdersCount += 1;
       if (!isCanceled) monthRevenueCents += totalCents;
+      if (o.status === 'entregue') completedThisMonthCount += 1;
+    }
+    if (o.status === 'entregue') {
+      completedTotalCount += 1;
     }
     if (orderDate >= prevMonthStart && orderDate <= prevMonthEnd && !isCanceled) {
       prevMonthRevenueCents += totalCents;
+    }
+
+    if (orderDate >= start7dISO && orderDate <= todayISO) {
+      const b7 = byStatus7d[o.status];
+      if (b7) {
+        b7.count += 1;
+        b7.total = roundCurrency(b7.total + o.valorTotal);
+      }
+    }
+    if (orderDate >= start30dISO && orderDate <= todayISO) {
+      const b30 = byStatus30d[o.status];
+      if (b30) {
+        b30.count += 1;
+        b30.total = roundCurrency(b30.total + o.valorTotal);
+      }
     }
 
     // Série mensal (últimos 6 meses)
@@ -396,6 +433,8 @@ export function computeDashboardAnalytics(
     awaitingConfirmationCount,
     inProductionCount,
     readyForPickupCount,
+    completedTotalCount,
+    completedThisMonthCount,
     completedInPeriodCount,
     canceledInPeriodCount,
 
@@ -406,6 +445,8 @@ export function computeDashboardAnalytics(
 
     series7d: buildDailySeries(orders, 7, today),
     series30d: buildDailySeries(orders, 30, today),
+    byStatus7d,
+    byStatus30d,
     monthlySeries: Array.from(monthMap.values()),
     byStatusInPeriod,
     topProductsInPeriod: Array.from(prodAgg.values())

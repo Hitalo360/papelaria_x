@@ -80,10 +80,8 @@ import {
 import { WhatsAppModal } from './components/WhatsAppModal';
 import { DateRangePicker } from './components/DateRangePicker';
 import { DashboardView } from './components/DashboardView';
-import {
-  computeDashboardAnalytics,
-  DashboardPeriodKey,
-} from './utils/dashboardMetrics';
+import { ReportsAnalyticsSection } from './components/ReportsAnalyticsSection';
+import { computeDashboardAnalytics } from './utils/dashboardMetrics';
 
 type SectionId =
   | 'dashboard'
@@ -125,7 +123,6 @@ export default function App() {
   const [section, setSection] = useState<SectionId>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [dashboardPeriod, setDashboardPeriod] = useState<DashboardPeriodKey>('este_mes');
   const [flashMessage, setFlashMessage] = useState<{
     type: 'success' | 'error' | 'info';
     text: string;
@@ -306,17 +303,10 @@ export default function App() {
     setFlashMessage(null);
   };
 
-  // Indicadores e análises reais do Dashboard
+  // Indicadores e análises reais (Dashboard e Relatórios)
   const dashboardAnalytics = useMemo(
-    () =>
-      computeDashboardAnalytics(
-        orders,
-        clients,
-        products,
-        clientById,
-        dashboardPeriod
-      ),
-    [orders, clients, products, clientById, dashboardPeriod]
+    () => computeDashboardAnalytics(orders, clients, products, clientById, 'este_mes'),
+    [orders, clients, products, clientById]
   );
 
   // Pedidos filtrados
@@ -1350,28 +1340,21 @@ export default function App() {
               {section === 'dashboard' && (
                 <DashboardView
                   analytics={dashboardAnalytics}
-                  periodKey={dashboardPeriod}
-                  onPeriodChange={setDashboardPeriod}
                   clientById={clientById}
                   onNewOrder={prepareNewOrderForm}
-                  onOpenOrders={(statusFilter) => {
-                    setFilterStatus(statusFilter ?? '');
-                    navigate('pedidos');
-                  }}
-                  onOpenOrder={handleOpenOrder}
-                  onOpenClients={() => {
-                    setEditingClientId(null);
-                    navigate('clientes');
-                  }}
-                  onOpenClient={(cliId) => {
-                    setSelectedClientId(cliId);
-                    navigate('visualizar_cliente');
-                  }}
                   onOpenProducts={() => {
                     setEditingProductId(null);
                     navigate('produtos');
                   }}
-                  onOpenReports={() => navigate('relatorios')}
+                  onOpenClients={() => {
+                    setEditingClientId(null);
+                    navigate('clientes');
+                  }}
+                  onOpenOrders={() => {
+                    setFilterStatus('');
+                    navigate('pedidos');
+                  }}
+                  onOpenOrder={handleOpenOrder}
                 />
               )}
 
@@ -3032,50 +3015,22 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Pedidos por status */}
-                  <div className="rounded-lg border border-slate-200 bg-white">
-                    <div className="border-b border-slate-200 px-5 py-3.5">
-                      <h2 className="text-sm font-bold text-slate-900">Pedidos por status</h2>
-                    </div>
-                    <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-                      {(Object.keys(STATUS_META) as OrderStatus[]).map((statusKey) => {
-                        const meta = STATUS_META[statusKey];
-                        const stats = reportData.byStatus[statusKey];
-                        const pct =
-                          reportData.totalPedidos > 0
-                            ? Math.round((stats.count / reportData.totalPedidos) * 100)
-                            : 0;
-                        return (
-                          <div
-                            key={statusKey}
-                            className="flex flex-col justify-between rounded-md border border-slate-200 bg-slate-50/50 p-3.5"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span
-                                className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${meta.badgeClass}`}
-                              >
-                                {meta.label}
-                              </span>
-                              <span className="font-mono-num text-xs font-medium text-slate-500">
-                                {pct}%
-                              </span>
-                            </div>
-                            <div className="mt-3 flex items-baseline justify-between">
-                              <span className="font-mono-num text-lg font-bold text-slate-900">
-                                {stats.count}{' '}
-                                <span className="text-xs font-normal text-slate-500">
-                                  {stats.count === 1 ? 'pedido' : 'pedidos'}
-                                </span>
-                              </span>
-                              <span className="font-mono-num text-xs font-semibold text-slate-700">
-                                {formatBRL(stats.total)}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  {/* Gráficos, comparativos, status por período e histórico detalhado */}
+                  <ReportsAnalyticsSection
+                    analytics={dashboardAnalytics}
+                    reportData={reportData}
+                    reportStart={reportStart}
+                    reportEnd={reportEnd}
+                    onOpenOrder={handleOpenOrder}
+                    onOpenClient={(cliId) => {
+                      setSelectedClientId(cliId);
+                      navigate('visualizar_cliente');
+                    }}
+                    onOpenOrdersWithStatus={(statusKey) => {
+                      setFilterStatus(statusKey);
+                      navigate('pedidos');
+                    }}
+                  />
 
                   <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                     <div className="rounded-lg border border-slate-200 bg-white">
